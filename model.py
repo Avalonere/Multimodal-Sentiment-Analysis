@@ -91,7 +91,7 @@ class SentimentCLIP(nn.Module):
             self.fusion = ConcatFusion(self.feature_dim)
         elif fusion_type == "weighted":
             self.fusion = LearnableWeightFusion(self.feature_dim)
-        elif fusion_type == "attention":
+        elif fusion_type == "attention" or fusion_type == "attention_alt":
             self.fusion = AttentionFusion(self.feature_dim)
 
         # 构建分类器
@@ -99,15 +99,23 @@ class SentimentCLIP(nn.Module):
             self.fusion.get_out_dim() if ablation_mode == 'none' else self.feature_dim
         )
         self.classifier = nn.Sequential(
-            nn.Linear(classifier_input_dim, num_classes)
+            nn.Linear(classifier_input_dim, 256),
+            nn.LayerNorm(256),
+            nn.GELU(),
+            nn.Dropout(0.5),
+            nn.Linear(256, num_classes)
         )
 
-        # Freeze CLIP parameters
-        for param in self.clip_model.parameters():
+        if fusion_type == "attention_alt":
+            self.classifier = nn.Sequential(
+                nn.Linear(self.feature_dim, num_classes)
+            )
+
+        # 冻结CLIP模型参数
+        for name, param in self.clip_model.named_parameters():
             param.requires_grad = False
 
         self.classifier = self.classifier.float()
-
 
     def forward(self, image, text):
         if self.ablation_mode == "image_only":

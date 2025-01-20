@@ -1,4 +1,5 @@
 import os
+import random
 import time
 
 import numpy as np
@@ -12,6 +13,17 @@ from tqdm import tqdm
 from dataset import get_train_val_loader
 from evaluate import evaluate
 from model import SentimentCLIP
+
+
+def set_seed(seed):
+    """设置随机种子"""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    # 设置确定性算法
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 def train_epoch(model, dataloader, criterion, optimizer, scheduler, device):
@@ -31,6 +43,7 @@ def train_epoch(model, dataloader, criterion, optimizer, scheduler, device):
 
         loss.backward()
         optimizer.step()
+
         scheduler.step()
 
         total_loss += loss.item()
@@ -39,17 +52,19 @@ def train_epoch(model, dataloader, criterion, optimizer, scheduler, device):
         correct += predicted.eq(labels).sum().item()
 
         # 如果是可学习权重融合,打印权重信息
-        if hasattr(model, 'current_weights') and model.ablation_mode is None:
+        if hasattr(model, 'current_weights') and model.ablation_mode == 'none':
             pbar.set_description(f'Loss: {loss.item():.4f} Acc: {100. * correct / total:.2f}% '
                                  f'Weights: {model.current_weights.data.cpu().numpy()}')
         else:
             pbar.set_description(f'Loss: {loss.item():.4f} Acc: {100. * correct / total:.2f}%')
 
-    return total_loss / len(dataloader), 100. * correct / total
+    return total_loss / len(dataloader), 100. * correct / total, model.current_weights.data.cpu().numpy() if hasattr(
+        model, 'current_weights') else None
 
 
 def train(config):
-    np.random.seed(config['data']['seed'])
+    """Main training function"""
+    set_seed(config['data']['seed'])
     # Create model and move to device
     device = torch.device(config['training']['device'])
     model = SentimentCLIP(config['training']['clip_model'], fusion_type=config['training']['fusion'],
@@ -72,7 +87,7 @@ def train(config):
     initial_weights = total / (len(class_counts) * class_counts)
 
     # 使用平方根缓解极端权重
-    weights = np.power(initial_weights, 0.3)
+    weights = np.power(initial_weights, 0.1)
 
     # 归一化权重使其和为类别数量
     weights = weights / weights.sum() * len(class_counts)
@@ -98,15 +113,12 @@ def train(config):
         max_lr=float(config['training']['learning_rate']),
         epochs=config['training']['num_epochs'],
         steps_per_epoch=len(train_loader),
-        pct_start=0.04,  # 2 epochs预热
-        anneal_strategy='cos'
     )
 
     # 早停设置
-    best_val_loss = float('inf')
-    patience = 3
+    best_val_f1 = 0
+    patience = 2
     patience_counter = 0
-    min_delta = 1e-4
 
     identifier = time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
     with open(f"./{config['training']['log_dir']}/log_{identifier}.txt", 'w') as f:
@@ -118,23 +130,20 @@ def train(config):
     # Training loop
     for epoch in range(1, config['training']['num_epochs'] + 1):
         print(f'\nTraining epoch {epoch}')
-        train_loss, train_acc = train_epoch(model, train_loader, criterion, optimizer,
-                                            scheduler, device)
+        train_loss, train_acc, weights = train_epoch(model, train_loader, criterion, optimizer,
+                                                     scheduler, device)
 
         plot_dir = f"{config['training']['plot_dir']}/{identifier}_{epoch}_confusion_matrix.png"
         # 验证
-        val_loss, val_acc, val_prec, val_rec, val_f1 = evaluate(model, val_loader, criterion, device, is_test=False,
+        val_loss, val_acc, val_prec, val_rec, val_f1 = evaluate(model, val_loader, torch.nn.CrossEntropyLoss(), device,
+                                                                is_test=False,
                                                                 plot_dir=plot_dir)
 
-        # 在config['training']['log_dir']中记录日志
-        with open(f"./{config['training']['log_dir']}/log_{identifier}.txt", 'a') as f:
-            f.write(f"Epoch {epoch} Train Loss: {train_loss:.4f} Train Acc: {train_acc:.2f}% "
-                    f"Val Loss: {val_loss:.4f} Val Acc: {val_acc:.2f}% Val Prec: {val_prec:.2f} Val Rec: {val_rec:.2f} Val F1: {val_f1:.2f}"
-                    f" Patience: {patience_counter} lr: {scheduler.get_last_lr()[0]}\n")
-
         # 早停检查
-        if val_loss < best_val_loss - min_delta:
-            best_val_loss = val_loss
+        if val_f1 > best_val_f1:
+            print(f"New best model found at epoch {epoch}")
+            print(f"New best f1: {val_f1:.4f}")
+            best_val_f1 = val_f1
             patience_counter = 0
             # 保存最佳模型
             torch.save({
@@ -145,22 +154,32 @@ def train(config):
             },
                 f"{config['training']['save_dir']}/{config['training']['fusion']}_{config['training']['ablation']}"
                 f"_{config['data']['imbalance_method']}_best_model.pt")
+            # 在config['training']['log_dir']中记录日志
+            with open(f"./{config['training']['log_dir']}/log_{identifier}.txt", 'a') as f:
+                f.write(f"Epoch {epoch} Train Loss: {train_loss:.4f} Train Acc: {train_acc:.2f}% "
+                        f"Val Loss: {val_loss:.4f} Val Acc: {val_acc:.4f}% Val Prec: {val_prec:.4f} Val Rec: {val_rec:.4f} Val F1: {val_f1:.4f}"
+                        f" Patience: {patience_counter} lr: {scheduler.get_last_lr()[0]} weights: {weights}\n")
         else:
             patience_counter += 1
             print('Patience counter:', patience_counter)
+            # 在config['training']['log_dir']中记录日志
+            with open(f"./{config['training']['log_dir']}/log_{identifier}.txt", 'a') as f:
+                f.write(f"Epoch {epoch} Train Loss: {train_loss:.4f} Train Acc: {train_acc:.2f}% "
+                        f"Val Loss: {val_loss:.4f} Val Acc: {val_acc:.4f}% Val Prec: {val_prec:.4f} Val Rec: {val_rec:.4f} Val F1: {val_f1:.4f}"
+                        f" Patience: {patience_counter} lr: {scheduler.get_last_lr()[0]} weights: {weights}\n")
             if patience_counter >= patience:
                 print(f"Early stopping at epoch {epoch}")
                 break
 
         # Save checkpoint
-        if (epoch + 1) % 5 == 0:
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-            },
-                f"{config['training']['save_dir']}/{config['training']['fusion']}_{config['training']['ablation']}"
-                f"_{config['data']['imbalance_method']}_checkpoint_{epoch}.pt")
+        # if epoch % 5 == 0:
+        #     torch.save({
+        #         'epoch': epoch,
+        #         'model_state_dict': model.state_dict(),
+        #         'optimizer_state_dict': optimizer.state_dict(),
+        #     },
+        #         f"{config['training']['save_dir']}/{config['training']['fusion']}_{config['training']['ablation']}"
+        #         f"_{config['data']['imbalance_method']}_checkpoint_{epoch}.pt")
 
 
 if __name__ == "__main__":

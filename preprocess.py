@@ -13,6 +13,9 @@ logger = logging.getLogger(__name__)
 
 
 class EncodingConverter:
+    """
+    编码转换器，用于将目录下的所有txt文件转换为指定编码格式
+    """
     def __init__(self, source_dir: str, target_encoding: str = 'utf-8'):
         """
         初始化编码转换器
@@ -89,16 +92,11 @@ class EncodingConverter:
                 logger.warning(f"无法成功读取文件 {file_path}，跳过此文件")
                 return False
 
-            # 如果已经是目标编码且没有替换字符，则跳过
-            if source_encoding.lower() == self.target_encoding.lower() and '�' not in content:
-                logger.info(f"文件 {file_path} 已经是 {self.target_encoding} 编码，无需转换")
-                return True
-
             # 使用新编码保存文件
             with open(file_path, 'w', encoding=self.target_encoding, errors='replace') as f:
                 f.write(content)
 
-            logger.info(f"成功将文件 {file_path} 从 {source_encoding} 转换为 {self.target_encoding}")
+            logger.info(f"成功处理并转换文件 {file_path}")
             return True
 
         except Exception as e:
@@ -129,7 +127,6 @@ class EncodingConverter:
 
 
 def main():
-    # 使用示例
     converter = EncodingConverter("./data/data", "utf-8")
     try:
         success, failed = converter.convert_directory()

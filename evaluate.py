@@ -1,4 +1,5 @@
 import os
+import random
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -6,11 +7,22 @@ import pandas as pd
 import seaborn as sns
 import torch
 import yaml
-from sklearn.metrics import classification_report, confusion_matrix, precision_score, recall_score, f1_score
+from sklearn.metrics import classification_report, confusion_matrix
 from tqdm import tqdm
 
 from dataset import get_test_loader
 from model import SentimentCLIP
+
+
+def set_seed(seed):
+    """设置随机种子"""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    # 设置确定性算法
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 def evaluate(model, dataloader, criterion, device, is_test=False, plot_dir=None):
@@ -72,12 +84,17 @@ def evaluate(model, dataloader, criterion, device, is_test=False, plot_dir=None)
         print(classification_report(all_labels, all_predictions,
                                     target_names=['negative', 'neutral', 'positive'],
                                     digits=4,
-                                    zero_division=0))
+                                    zero_division=np.nan))
+        report = classification_report(all_labels, all_predictions,
+                                       target_names=['negative', 'neutral', 'positive'],
+                                       digits=4,
+                                       zero_division=np.nan,
+                                       output_dict=True)
+        weighted_f1 = report['weighted avg']['f1-score']
+        weighted_precision = report['weighted avg']['precision']
+        weighted_recall = report['weighted avg']['recall']
 
-        return (total_loss / len(dataloader), 100. * correct / total,
-                precision_score(all_labels, all_predictions, average='weighted', zero_division=np.nan),
-                recall_score(all_labels, all_predictions, average='weighted', zero_division=np.nan),
-                f1_score(all_labels, all_predictions, average='weighted', zero_division=np.nan))
+        return total_loss / len(dataloader), 100. * correct / total, weighted_precision, weighted_recall, weighted_f1
 
     else:
         return predictions, guids
@@ -95,6 +112,9 @@ def test(config):
         f"_{config['data']['imbalance_method']}_best_model.pt",
         weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
+    print("Model loaded from checkpoint")
+    print("fusion_type:", config['training']['fusion'])
+    print("ablation_mode:", config['training']['ablation'])
 
     # 获取测试集
     test_loader = get_test_loader(config)
@@ -111,8 +131,8 @@ def test(config):
         'guid': guids,
         'tag': predictions
     })
-    results_df.to_csv('predictions.txt', index=False)
-    print("Predictions saved to predictions.csv")
+    results_df.to_csv(f'predictions_{config['training']['fusion']}.txt', index=False)
+    print("Predictions saved to predictions.txt")
 
 
 if __name__ == "__main__":
@@ -120,5 +140,5 @@ if __name__ == "__main__":
         config = yaml.safe_load(f)
 
     os.makedirs(config['training']['save_dir'], exist_ok=True)
-
+    set_seed(config['data']['seed'])
     test(config)
