@@ -1,7 +1,5 @@
 # Multimodal Sentiment Analysis
 
-# 10225501464 施长林
-
 This is the repository for the final project of the course "Contemporary Artificial Intelligence" at DaSE, ECNU. The
 project is about multimodal sentiment analysis on the given dataset. The project is implemented in Python3 and PyTorch.
 
