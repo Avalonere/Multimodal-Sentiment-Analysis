@@ -132,7 +132,7 @@ def test(config):
         'tag': predictions
     })
     results_df.to_csv(f'predictions_{config['training']['fusion']}.txt', index=False)
-    print("Predictions saved to predictions.txt")
+    print(f"Predictions saved to predictions_{config['training']['fusion']}.txt")
 
 
 if __name__ == "__main__":

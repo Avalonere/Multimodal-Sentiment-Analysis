@@ -13,6 +13,7 @@ for %%f in (concat weighted attention attention_alt) do (
 
     :: 运行训练脚本并记录日志
     python train.py > experiments/fusion_%%f_ablation_none.log 2>&1
+    python evaluate.py
 )
 
 :: 第二组实验: 单模态实验
@@ -24,6 +25,7 @@ for %%a in (text_only image_only) do (
 
     :: 运行训练脚本并记录日志
     python train.py > experiments/fusion_none_ablation_%%a.log 2>&1
+    python evaluate.py
 )
 
 echo All experiments completed!

@@ -1,20 +1,26 @@
+import os
+import warnings
+
 import clip
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import umap
+import yaml
 from PIL import Image
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
+from torch import nn
 from torchvision import transforms
 from tqdm import tqdm
 
+from dataset import get_train_val_loader
 from model import SentimentCLIP
 
+warnings.filterwarnings("ignore")
 plt.style.use('ggplot')
 sns.set_theme()
 sns.set_palette('husl')
@@ -358,31 +364,32 @@ def analyze_model_behaviors(model, dataloader, device, name):
     plt.close()
 
 
-# if __name__ == '__main__':
-#     names = ['concat', 'weighted', 'attention', 'attention_alt', 'text_only', 'image_only']
-#     for name in names:
-#         model, device = load_best_model(**{name: True})
-#         with open("config.yaml", 'r') as f:
-#             config = yaml.safe_load(f)
+if __name__ == '__main__':
+    names = ['concat', 'weighted', 'attention', 'attention_alt', 'text_only', 'image_only']
+    for name in names:
+        model, device = load_best_model(**{name: True})
+        with open("config.yaml", 'r') as f:
+            config = yaml.safe_load(f)
 
-#         _, val_loader = get_train_val_loader(config)
+        _, val_loader = get_train_val_loader(config)
 
-#         # 创建可视化目录
-#         os.makedirs('vis', exist_ok=True)
+        # 创建可视化目录
+        os.makedirs('vis', exist_ok=True)
 
-#         # 运行可视化分析
-#         analyze_confidence(model, val_loader, device, name)
-#         analyze_errors(model, val_loader, device, name)
-#         visualize_features(model, val_loader, device, name)
-#         analyze_model_behaviors(model, val_loader, device, name)
-#         if name == 'attention' or name == 'attention_alt':
-#             visualize_attention_weights(model, val_loader, device, name)
+        # 运行可视化分析
+        analyze_confidence(model, val_loader, device, name)
+        analyze_errors(model, val_loader, device, name)
+        visualize_features(model, val_loader, device, name)
+        analyze_model_behaviors(model, val_loader, device, name)
+        if name == 'attention' or name == 'attention_alt':
+            visualize_attention_weights(model, val_loader, device, name)
 
 
 class GradCAM:
     """
     Grad-CAM 算法
     """
+
     def __init__(self, model, target_block):
         self.model = model
         self.block = target_block
@@ -489,3 +496,134 @@ if __name__ == '__main__':
     # 用法示例
     overlayed_img = overlay_cam_on_image('./data/data/231.jpg', cam_map)
     cv2.imwrite('./vis/gradcam_overlay.jpg', overlayed_img)
+
+
+class TextGradCAM:
+    """
+    使用类似Grad-CAM的思路对文本输入进行可视化分析
+    """
+
+    def __init__(self, model, target_block):
+        self.model = model
+        self.block = target_block
+        self.gradients = None
+        self.activation = None
+        self._register_hooks()
+
+    def _register_hooks(self):
+        def forward_hook(module, inp, out):
+            self.activation = out.detach()
+
+        def backward_hook(module, grad_in, grad_out):
+            self.gradients = grad_out[0].detach()
+
+        self.block.register_forward_hook(forward_hook)
+        self.block.register_backward_hook(backward_hook)
+
+    def __call__(self, tokens, target_idx=None):
+        # 去掉整型tokens的requires_grad_
+        # tokens = tokens.requires_grad_(True)
+        text_features = self.model.clip_model.encode_text(tokens).float()
+        logits = self.model.classifier(text_features)
+
+        if target_idx is None:
+            target_idx = logits.argmax(dim=1)
+
+        criterion = nn.CrossEntropyLoss()
+        loss = criterion(logits, target_idx)
+
+        self.model.zero_grad()
+        loss.backward()
+
+        alpha = self.gradients.mean(dim=1, keepdim=True)
+        cam = F.relu(torch.sum(alpha * self.activation, dim=-1))
+        cam = cam.squeeze().cpu().detach().numpy()
+        cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
+
+        return cam
+
+
+def gradcam_for_single_text(model, text_str, target_id, device):
+    """
+    对单个文本执行 Grad-CAM
+    """
+    tokens = clip.tokenize([text_str]).to(device)
+
+    # 将目标block改为transformer的最后一层
+    target_block = model.clip_model.token_embedding
+
+    for param in target_block.parameters():
+        param.requires_grad = True
+
+    with torch.enable_grad():
+        cam_generator = TextGradCAM(model, target_block)
+        cam = cam_generator(tokens, torch.tensor([target_id]).to(device))
+
+    return cam
+
+
+def visualize_importance_plot(text_str, cam_weights, save_path='vis'):
+    """
+    使用seaborn可视化文本重要性
+    Args:
+        text_str: 输入文本
+        cam_weights: GradCAM权重
+        save_path: 保存路径
+    """
+    # 创建保存目录
+    os.makedirs(save_path, exist_ok=True)
+
+    # 准备数据
+    words = text_str.split()
+    weights = cam_weights[:len(words)]
+    norm_weights = (weights - weights.min()) / (weights.max() - weights.min() + 1e-8)
+
+    # 设置样式
+    plt.figure(figsize=(8, 4))
+
+    # 创建调色板
+    palette = sns.husl_palette(len(words))
+
+    # 绘制条形图
+    bars = plt.bar(range(len(words)), norm_weights, color=palette)
+
+    # 设置图表
+    plt.xticks(range(len(words)), words, rotation=45, ha='right')
+    plt.ylabel('Importance Score')
+    plt.title('Word Importance Analysis')
+
+    # 添加数值标签
+    for bar, weight in zip(bars, norm_weights):
+        plt.text(bar.get_x() + bar.get_width() / 2,
+                 bar.get_height(),
+                 f'{weight:.2f}',
+                 ha='center', va='bottom')
+
+    plt.tight_layout()
+
+    # 保存图表
+    save_file = os.path.join(save_path, 'text_importance.png')
+    plt.savefig(save_file, dpi=300, bbox_inches='tight')
+    plt.close()
+
+    return save_file
+
+
+def analyze_text_complete(model, text_str, target_id, device, save_path='vis'):
+    """
+    完整的文本分析流程
+    """
+    # 获取GradCAM结果
+    cam_map = gradcam_for_single_text(model, text_str, target_id, device)
+
+    # 图表可视化
+    plot_path = visualize_importance_plot(text_str, cam_map, save_path)
+    print(f"\n可视化结果已保存至: {plot_path}")
+
+
+# 使用示例:
+if __name__ == '__main__':
+    text = "a happy day"
+    model, device = load_best_model(text_only=True)
+    model.eval()
+    analyze_text_complete(model, text, 2, device)

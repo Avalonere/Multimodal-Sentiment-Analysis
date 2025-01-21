@@ -16,6 +16,7 @@ class EncodingConverter:
     """
     编码转换器，用于将目录下的所有txt文件转换为指定编码格式
     """
+
     def __init__(self, source_dir: str, target_encoding: str = 'utf-8'):
         """
         初始化编码转换器
