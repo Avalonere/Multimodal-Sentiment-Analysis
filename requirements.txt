@@ -1,0 +1,14 @@
+chardet==5.2.0
+matplotlib==3.10.0
+numpy==2.2.2
+openai_clip==1.0.1
+opencv_python==4.11.0.86
+pandas==2.2.3
+Pillow==11.1.0
+PyYAML==6.0.2
+scikit_learn==1.6.1
+seaborn==0.13.2
+torch==2.5.1
+torchvision==0.20.1
+tqdm==4.66.5
+umap_learn==0.5.7
